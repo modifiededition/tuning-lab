@@ -19,9 +19,7 @@ PPO is widely used in training models like ChatGPT and Claude to follow instruct
 ```
 tuning-lab/
 ├── rl/
-│   └── ppo/
-│       ├── model.py
-│       └── README.md
+│   └── ppo.py
 └── README.md
 ```
 

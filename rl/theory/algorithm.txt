@@ -1,0 +1,118 @@
+ALGORITHM: Proximal Policy Optimization (PPO) for RLHF
+INPUT:
+  - policy_model: Initialized from sft_model (this is the model we optimize)
+  - reward_model: Trained reward model or can be deterministic
+  - reference_model: Frozen copy of sft_model (for KL penalty)
+  - prompt_dataset: Set of prompts for RL training
+  - ppo_hyperparameters: {
+      learning_rate, 
+      batch_size,
+      clip_epsilon (ε, typically 0.2),
+      kl_coefficient (β, typically 0.02),
+      value_function_coef,
+      entropy_coef,
+      ppo_epochs (K, typically 4),
+      num_rollouts
+    }
+
+OUTPUT:
+  - optimized_policy: Final InstructGPT model
+
+PROCEDURE:
+  1. Initialize:
+     policy ← sft_model (this will be updated)
+     reference_policy ← frozen_copy(sft_model)
+     value_function ← initialize_critic_network()
+  
+  2. FOR each training iteration:
+     
+     # === ROLLOUT PHASE ===
+     a. Sample batch of prompts from prompt_dataset
+     
+     b. FOR each prompt in batch:
+          i. Generate response using current policy:
+             response, log_probs_old ← policy.generate(prompt)
+             # log_probs_old: log probabilities for each token
+             # under the current policy
+          
+          ii. Compute rewards:
+              # Get reward from reward model
+              reward_rm ← reward_model(prompt, response)
+              
+              # Compute KL divergence penalty
+              log_probs_ref ← reference_policy.get_log_probs(prompt, response)
+              kl_penalty ← KL(policy || reference_policy)
+                         = (log_probs_old - log_probs_ref).mean()
+              
+              # Final reward with KL penalty
+              reward_final ← reward_rm - β × kl_penalty
+          
+          iii. Store trajectory:
+               trajectories.append({
+                   prompt: prompt,
+                   response: response,
+                   rewards: reward_final,
+                   log_probs_old: log_probs_old,
+                   values: value_function(prompt, response)
+               })
+     
+     # === ADVANTAGE ESTIMATION ===
+     c. FOR each trajectory:
+            advantages = compute_gae(rewards, values, gamma=γ, lam=λ)
+            returns = advantages + values
+            # Normalize advantages (optional but helps stability)
+            advantages ← (advantages - mean(advantages)) / (std(advantages) + 1e-8)
+     
+     # === PPO UPDATE PHASE ===
+     d. FOR k in 1 to ppo_epochs:
+          Shuffle trajectories
+          
+          FOR each mini_batch in trajectories:
+              i. Recompute log probabilities with current policy:
+                 log_probs_new ← policy.get_log_probs(
+                     mini_batch.prompts, 
+                     mini_batch.responses
+                 )
+              
+              ii. Compute probability ratio:
+                  ratio ← exp(log_probs_new - log_probs_old)
+              
+              iii. Compute clipped surrogate objective:
+                   # Unclipped objective
+                   L_unclipped ← ratio × advantages
+                   
+                   # Clipped objective
+                   L_clipped ← clip(ratio, 1-ε, 1+ε) × advantages
+                   
+                   # Take minimum (pessimistic bound)
+                   L_CLIP ← mean(min(L_unclipped, L_clipped))
+              
+              iv. Compute value function loss:
+                  values_new ← value_function(mini_batch.prompts, 
+                                               mini_batch.responses)
+                  L_VF ← mean((values_new - returns)²)
+              
+              v. Compute entropy bonus (encourages exploration):
+                 entropy = - (probs * log_probs).sum(dim=-1).mean() # computed across one token
+                 L_entropy ← mean(entropy)
+              
+              vi. Compute total loss:
+                  loss ← -L_CLIP + value_function_coef × L_VF - entropy_coef × L_entropy
+              
+              vii. Update policy and value function:
+                   gradients ← ∂loss/∂θ
+                   θ ← θ - learning_rate × gradients
+              
+              viii. Optional: Clip gradient norms for stability
+                    gradients ← clip_grad_norm(gradients, max_norm=0.5)
+     
+     # === LOGGING & MONITORING ===
+     e. Log metrics:
+        - Average reward from reward model
+        - Average KL divergence from reference policy
+        - Policy loss, value loss, entropy
+        - Gradient norms
+     
+     f. Periodically evaluate on held-out prompts
+  
+  3. RETURN policy as optimized_policy
